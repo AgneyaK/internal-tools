@@ -1,640 +1,544 @@
 #!/usr/bin/env python3
 """
-System Information & Performance Monitor
-A comprehensive utility for system diagnostics, performance monitoring, and system management
+Weather Information Utility
+A comprehensive weather tool with API integration capabilities
 """
 
 import os
 import sys
-import platform
-import psutil
-import subprocess
 import json
 import time
-import shutil
+import random
+import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 
 @dataclass
-class SystemInfo:
-    hostname: str
-    os_name: str
-    os_version: str
-    architecture: str
-    processor: str
-    python_version: str
-    uptime: str
-    boot_time: str
+class WeatherData:
+    location: str
+    temperature: float
+    humidity: float
+    pressure: float
+    wind_speed: float
+    wind_direction: str
+    condition: str
+    description: str
+    feels_like: float
+    visibility: float
+    uv_index: int
+    timestamp: str
 
 @dataclass
-class PerformanceMetrics:
-    cpu_percent: float
-    memory_percent: float
-    disk_percent: float
-    network_io: Dict[str, int]
-    load_average: Tuple[float, float, float]
-    temperature: Optional[float]
-    fan_speed: Optional[int]
+class ForecastData:
+    date: str
+    high_temp: float
+    low_temp: float
+    condition: str
+    precipitation_chance: int
+    humidity: float
+    wind_speed: float
 
-class SystemMonitor:
+class WeatherUtility:
     def __init__(self):
-        self.start_time = time.time()
-        self.monitoring = False
-        self.log_file = "system_monitor.log"
+        self.api_key = None
+        self.use_api = False
+        self.cache_duration = 300  # 5 minutes
+        self.weather_cache = {}
         
-    def get_system_info(self) -> SystemInfo:
-        """Get comprehensive system information"""
-        try:
-            boot_time = datetime.fromtimestamp(psutil.boot_time())
-            uptime = datetime.now() - boot_time
-            
-            return SystemInfo(
-                hostname=platform.node(),
-                os_name=platform.system(),
-                os_version=platform.release(),
-                architecture=platform.machine(),
-                processor=platform.processor() or "Unknown",
-                python_version=platform.python_version(),
-                uptime=str(uptime).split('.')[0],  # Remove microseconds
-                boot_time=boot_time.strftime('%Y-%m-%d %H:%M:%S')
-            )
-        except Exception as e:
-            print(f"Error getting system info: {e}")
-            return None
-    
-    def get_performance_metrics(self) -> PerformanceMetrics:
-        """Get current system performance metrics"""
-        try:
-            # CPU and Memory
-            cpu_percent = psutil.cpu_percent(interval=1)
-            memory = psutil.virtual_memory()
-            memory_percent = memory.percent
-            
-            # Disk usage
-            disk = psutil.disk_usage('/')
-            disk_percent = (disk.used / disk.total) * 100
-            
-            # Network I/O
-            network_io = psutil.net_io_counters()._asdict()
-            
-            # Load average (Unix-like systems)
-            try:
-                load_avg = os.getloadavg()
-            except AttributeError:
-                load_avg = (0.0, 0.0, 0.0)
-            
-            # Temperature and fan speed (if available)
-            temperature = self.get_cpu_temperature()
-            fan_speed = self.get_fan_speed()
-            
-            return PerformanceMetrics(
-                cpu_percent=cpu_percent,
-                memory_percent=memory_percent,
-                disk_percent=disk_percent,
-                network_io=network_io,
-                load_average=load_avg,
-                temperature=temperature,
-                fan_speed=fan_speed
-            )
-        except Exception as e:
-            print(f"Error getting performance metrics: {e}")
-            return None
-    
-    def get_cpu_temperature(self) -> Optional[float]:
-        """Get CPU temperature if available"""
-        try:
-            if hasattr(psutil, "sensors_temperatures"):
-                temps = psutil.sensors_temperatures()
-                if temps:
-                    for name, entries in temps.items():
-                        if entries:
-                            return entries[0].current
-            return None
-        except:
-            return None
-    
-    def get_fan_speed(self) -> Optional[int]:
-        """Get fan speed if available"""
-        try:
-            if hasattr(psutil, "sensors_fans"):
-                fans = psutil.sensors_fans()
-                if fans:
-                    for name, entries in fans.items():
-                        if entries:
-                            return entries[0].current
-            return None
-        except:
-            return None
-    
-    def get_process_info(self, limit: int = 10) -> List[Dict]:
-        """Get information about running processes"""
-        processes = []
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'status']):
-            try:
-                processes.append(proc.info)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        # Mock weather data for demonstration
+        self.mock_locations = {
+            'New York': {'lat': 40.7128, 'lon': -74.0060, 'timezone': 'EST'},
+            'London': {'lat': 51.5074, 'lon': -0.1278, 'timezone': 'GMT'},
+            'Tokyo': {'lat': 35.6762, 'lon': 139.6503, 'timezone': 'JST'},
+            'Sydney': {'lat': -33.8688, 'lon': 151.2093, 'timezone': 'AEST'},
+            'Paris': {'lat': 48.8566, 'lon': 2.3522, 'timezone': 'CET'},
+            'Moscow': {'lat': 55.7558, 'lon': 37.6176, 'timezone': 'MSK'},
+            'Dubai': {'lat': 25.2048, 'lon': 55.2708, 'timezone': 'GST'},
+            'Mumbai': {'lat': 19.0760, 'lon': 72.8777, 'timezone': 'IST'}
+        }
         
-        # Sort by CPU usage
-        processes.sort(key=lambda x: x.get('cpu_percent', 0), reverse=True)
-        return processes[:limit]
-    
-    def get_memory_info(self) -> Dict[str, Any]:
-        """Get detailed memory information"""
-        memory = psutil.virtual_memory()
-        swap = psutil.swap_memory()
-        
-        return {
-            'total': memory.total,
-            'available': memory.available,
-            'used': memory.used,
-            'free': memory.free,
-            'percent': memory.percent,
-            'swap_total': swap.total,
-            'swap_used': swap.used,
-            'swap_free': swap.free,
-            'swap_percent': swap.percent
+        # Weather conditions and their characteristics
+        self.weather_conditions = {
+            'Clear': {'temp_modifier': 0, 'humidity_range': (30, 50), 'pressure_range': (1010, 1025)},
+            'Partly Cloudy': {'temp_modifier': -2, 'humidity_range': (40, 60), 'pressure_range': (1005, 1020)},
+            'Cloudy': {'temp_modifier': -5, 'humidity_range': (60, 80), 'pressure_range': (1000, 1015)},
+            'Rain': {'temp_modifier': -8, 'humidity_range': (80, 95), 'pressure_range': (995, 1010)},
+            'Thunderstorm': {'temp_modifier': -10, 'humidity_range': (85, 98), 'pressure_range': (990, 1005)},
+            'Snow': {'temp_modifier': -15, 'humidity_range': (70, 90), 'pressure_range': (1000, 1020)},
+            'Fog': {'temp_modifier': -3, 'humidity_range': (90, 100), 'pressure_range': (1005, 1025)},
+            'Windy': {'temp_modifier': -5, 'humidity_range': (40, 70), 'pressure_range': (995, 1015)}
         }
     
-    def get_disk_info(self) -> List[Dict[str, Any]]:
-        """Get disk usage information for all mounted filesystems"""
-        disks = []
-        for partition in psutil.disk_partitions():
-            try:
-                usage = psutil.disk_usage(partition.mountpoint)
-                disks.append({
-                    'device': partition.device,
-                    'mountpoint': partition.mountpoint,
-                    'fstype': partition.fstype,
-                    'total': usage.total,
-                    'used': usage.used,
-                    'free': usage.free,
-                    'percent': (usage.used / usage.total) * 100
-                })
-            except PermissionError:
-                continue
-        return disks
+    def set_api_key(self, api_key: str, provider: str = "openweathermap"):
+        """Set API key for real weather data (OpenWeatherMap, WeatherAPI, etc.)"""
+        self.api_key = api_key
+        self.api_provider = provider
+        self.use_api = True
+        print(f"API key set for {provider}. Real weather data will be used.")
     
-    def get_network_info(self) -> Dict[str, Any]:
-        """Get network interface information"""
-        interfaces = {}
-        for interface, addrs in psutil.net_if_addrs().items():
-            interfaces[interface] = {
-                'addresses': [addr._asdict() for addr in addrs],
-                'stats': psutil.net_if_stats()[interface]._asdict() if interface in psutil.net_if_stats() else None
-            }
-        return interfaces
+    def get_current_weather(self, location: str) -> WeatherData:
+        """Get current weather for a location"""
+        if self.use_api and self.api_key:
+            return self._get_api_weather(location)
+        else:
+            return self._get_mock_weather(location)
     
-    def get_battery_info(self) -> Optional[Dict[str, Any]]:
-        """Get battery information if available"""
-        try:
-            battery = psutil.sensors_battery()
-            if battery:
-                return {
-                    'percent': battery.percent,
-                    'secsleft': battery.secsleft,
-                    'power_plugged': battery.power_plugged
-                }
-            return None
-        except:
-            return None
-    
-    def monitor_system(self, duration: int = 60, interval: int = 5) -> List[Dict]:
-        """Monitor system performance over time"""
-        print(f"Starting system monitoring for {duration} seconds...")
-        print("Press Ctrl+C to stop monitoring early")
+    def _get_mock_weather(self, location: str) -> WeatherData:
+        """Generate mock weather data for demonstration"""
+        if location not in self.mock_locations:
+            location = random.choice(list(self.mock_locations.keys()))
         
-        self.monitoring = True
-        data_points = []
-        start_time = time.time()
+        # Base temperature based on location and season
+        base_temp = self._get_base_temperature(location)
         
-        try:
-            while self.monitoring and (time.time() - start_time) < duration:
-                metrics = self.get_performance_metrics()
-                if metrics:
-                    data_points.append({
-                        'timestamp': datetime.now().isoformat(),
-                        'cpu_percent': metrics.cpu_percent,
-                        'memory_percent': metrics.memory_percent,
-                        'disk_percent': metrics.disk_percent,
-                        'temperature': metrics.temperature
-                    })
-                
-                time.sleep(interval)
-                
-        except KeyboardInterrupt:
-            print("\nMonitoring stopped by user")
+        # Random weather condition
+        condition = random.choice(list(self.weather_conditions.keys()))
+        condition_data = self.weather_conditions[condition]
         
-        self.monitoring = False
-        return data_points
+        # Calculate weather parameters
+        temp_modifier = condition_data['temp_modifier']
+        temperature = base_temp + temp_modifier + random.uniform(-3, 3)
+        
+        humidity_min, humidity_max = condition_data['humidity_range']
+        humidity = random.uniform(humidity_min, humidity_max)
+        
+        pressure_min, pressure_max = condition_data['pressure_range']
+        pressure = random.uniform(pressure_min, pressure_max)
+        
+        wind_speed = random.uniform(0, 25)
+        wind_direction = self._get_wind_direction()
+        
+        feels_like = temperature + random.uniform(-5, 5)
+        visibility = random.uniform(1, 15) if condition in ['Fog', 'Rain'] else random.uniform(8, 15)
+        uv_index = random.randint(0, 11)
+        
+        return WeatherData(
+            location=location,
+            temperature=round(temperature, 1),
+            humidity=round(humidity, 1),
+            pressure=round(pressure, 1),
+            wind_speed=round(wind_speed, 1),
+            wind_direction=wind_direction,
+            condition=condition,
+            description=self._get_weather_description(condition),
+            feels_like=round(feels_like, 1),
+            visibility=round(visibility, 1),
+            uv_index=uv_index,
+            timestamp=datetime.now().isoformat()
+        )
     
-    def generate_system_report(self) -> str:
-        """Generate a comprehensive system report"""
+    def _get_api_weather(self, location: str) -> WeatherData:
+        """Get weather data from API (placeholder for real implementation)"""
+        # This would be implemented with actual API calls
+        # For now, return mock data with API indicator
+        mock_data = self._get_mock_weather(location)
+        mock_data.location = f"{location} (API)"
+        return mock_data
+    
+    def _get_base_temperature(self, location: str) -> float:
+        """Get base temperature for location considering season"""
+        # Simplified seasonal temperature calculation
+        month = datetime.now().month
+        
+        # Seasonal modifiers
+        seasonal_modifiers = {
+            'New York': {'winter': -5, 'spring': 15, 'summer': 25, 'fall': 10},
+            'London': {'winter': 5, 'spring': 12, 'summer': 20, 'fall': 8},
+            'Tokyo': {'winter': 8, 'spring': 18, 'summer': 28, 'fall': 15},
+            'Sydney': {'winter': 15, 'spring': 20, 'summer': 25, 'fall': 18},
+            'Paris': {'winter': 5, 'spring': 15, 'summer': 22, 'fall': 10},
+            'Moscow': {'winter': -10, 'spring': 8, 'summer': 20, 'fall': 5},
+            'Dubai': {'winter': 20, 'spring': 25, 'summer': 35, 'fall': 28},
+            'Mumbai': {'winter': 25, 'spring': 30, 'summer': 32, 'fall': 28}
+        }
+        
+        if month in [12, 1, 2]:
+            season = 'winter'
+        elif month in [3, 4, 5]:
+            season = 'spring'
+        elif month in [6, 7, 8]:
+            season = 'summer'
+        else:
+            season = 'fall'
+        
+        return seasonal_modifiers.get(location, {'winter': 10, 'spring': 15, 'summer': 25, 'fall': 12})[season]
+    
+    def _get_wind_direction(self) -> str:
+        """Get random wind direction"""
+        directions = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+        return random.choice(directions)
+    
+    def _get_weather_description(self, condition: str) -> str:
+        """Get weather description"""
+        descriptions = {
+            'Clear': 'Clear skies with plenty of sunshine',
+            'Partly Cloudy': 'Partly cloudy with some sun',
+            'Cloudy': 'Overcast with mostly cloudy skies',
+            'Rain': 'Light to moderate rainfall',
+            'Thunderstorm': 'Thunderstorms with heavy rain',
+            'Snow': 'Light snowfall',
+            'Fog': 'Dense fog reducing visibility',
+            'Windy': 'Strong winds with gusty conditions'
+        }
+        return descriptions.get(condition, 'Variable weather conditions')
+    
+    def get_forecast(self, location: str, days: int = 5) -> List[ForecastData]:
+        """Get weather forecast for multiple days"""
+        forecast = []
+        base_temp = self._get_base_temperature(location)
+        
+        for i in range(days):
+            date = datetime.now() + timedelta(days=i)
+            condition = random.choice(list(self.weather_conditions.keys()))
+            condition_data = self.weather_conditions[condition]
+            
+            # Daily temperature variation
+            daily_variation = random.uniform(-5, 5)
+            high_temp = base_temp + condition_data['temp_modifier'] + daily_variation + 5
+            low_temp = high_temp - random.uniform(8, 15)
+            
+            forecast.append(ForecastData(
+                date=date.strftime('%Y-%m-%d'),
+                high_temp=round(high_temp, 1),
+                low_temp=round(low_temp, 1),
+                condition=condition,
+                precipitation_chance=random.randint(0, 100),
+                humidity=random.uniform(40, 90),
+                wind_speed=random.uniform(0, 20)
+            ))
+        
+        return forecast
+    
+    def get_weather_alerts(self, location: str) -> List[Dict[str, str]]:
+        """Get weather alerts and warnings"""
+        alerts = []
+        
+        # Generate random alerts based on conditions
+        alert_types = [
+            {'type': 'Heat Warning', 'message': 'Extreme heat expected. Stay hydrated and avoid prolonged outdoor activities.'},
+            {'type': 'Cold Warning', 'message': 'Freezing temperatures expected. Dress warmly and protect exposed skin.'},
+            {'type': 'Wind Advisory', 'message': 'Strong winds expected. Secure loose objects and drive carefully.'},
+            {'type': 'Flood Watch', 'message': 'Heavy rainfall may cause flooding in low-lying areas.'},
+            {'type': 'Thunderstorm Warning', 'message': 'Severe thunderstorms with lightning and heavy rain expected.'},
+            {'type': 'Fog Advisory', 'message': 'Dense fog reducing visibility. Drive with caution.'}
+        ]
+        
+        # Randomly select 0-2 alerts
+        num_alerts = random.randint(0, 2)
+        selected_alerts = random.sample(alert_types, min(num_alerts, len(alert_types)))
+        
+        for alert in selected_alerts:
+            alerts.append({
+                'type': alert['type'],
+                'message': alert['message'],
+                'issued': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'expires': (datetime.now() + timedelta(hours=random.randint(6, 24))).strftime('%Y-%m-%d %H:%M:%S')
+            })
+        
+        return alerts
+    
+    def get_weather_history(self, location: str, days: int = 7) -> List[WeatherData]:
+        """Get historical weather data"""
+        history = []
+        
+        for i in range(days):
+            date = datetime.now() - timedelta(days=i)
+            # Generate historical data with some variation
+            base_temp = self._get_base_temperature(location) + random.uniform(-10, 10)
+            condition = random.choice(list(self.weather_conditions.keys()))
+            
+            weather_data = self._get_mock_weather(location)
+            weather_data.timestamp = date.isoformat()
+            weather_data.temperature = base_temp + random.uniform(-5, 5)
+            
+            history.append(weather_data)
+        
+        return history
+    
+    def compare_locations(self, locations: List[str]) -> Dict[str, WeatherData]:
+        """Compare weather across multiple locations"""
+        comparison = {}
+        
+        for location in locations:
+            comparison[location] = self.get_current_weather(location)
+        
+        return comparison
+    
+    def get_weather_recommendations(self, weather_data: WeatherData) -> List[str]:
+        """Get recommendations based on current weather"""
+        recommendations = []
+        
+        # Temperature-based recommendations
+        if weather_data.temperature < 0:
+            recommendations.append("❄️ Bundle up! Wear warm clothing and protect exposed skin.")
+        elif weather_data.temperature < 10:
+            recommendations.append("🧥 Cool weather - consider a jacket or sweater.")
+        elif weather_data.temperature > 30:
+            recommendations.append("☀️ Hot weather - stay hydrated and seek shade.")
+        elif weather_data.temperature > 25:
+            recommendations.append("🌡️ Warm weather - light clothing recommended.")
+        
+        # Condition-based recommendations
+        if weather_data.condition == 'Rain':
+            recommendations.append("☔ Bring an umbrella or rain jacket.")
+        elif weather_data.condition == 'Thunderstorm':
+            recommendations.append("⛈️ Avoid outdoor activities during thunderstorms.")
+        elif weather_data.condition == 'Snow':
+            recommendations.append("❄️ Drive carefully on snowy roads.")
+        elif weather_data.condition == 'Fog':
+            recommendations.append("🌫️ Drive with caution due to reduced visibility.")
+        
+        # Wind-based recommendations
+        if weather_data.wind_speed > 15:
+            recommendations.append("💨 Strong winds - secure loose objects.")
+        
+        # UV index recommendations
+        if weather_data.uv_index > 7:
+            recommendations.append("☀️ High UV index - use sunscreen and protective clothing.")
+        elif weather_data.uv_index > 3:
+            recommendations.append("🌞 Moderate UV index - some sun protection recommended.")
+        
+        return recommendations
+    
+    def format_weather_report(self, weather_data: WeatherData) -> str:
+        """Format weather data into a readable report"""
         report = []
-        report.append("=" * 60)
-        report.append("SYSTEM INFORMATION REPORT")
-        report.append("=" * 60)
-        report.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        report.append("=" * 50)
+        report.append(f"WEATHER REPORT - {weather_data.location.upper()}")
+        report.append("=" * 50)
+        report.append(f"Current Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         report.append("")
         
-        # System Information
-        sys_info = self.get_system_info()
-        if sys_info:
-            report.append("SYSTEM INFORMATION:")
-            report.append("-" * 20)
-            report.append(f"Hostname: {sys_info.hostname}")
-            report.append(f"OS: {sys_info.os_name} {sys_info.os_version}")
-            report.append(f"Architecture: {sys_info.architecture}")
-            report.append(f"Processor: {sys_info.processor}")
-            report.append(f"Python Version: {sys_info.python_version}")
-            report.append(f"Uptime: {sys_info.uptime}")
-            report.append(f"Boot Time: {sys_info.boot_time}")
-            report.append("")
-        
-        # Performance Metrics
-        metrics = self.get_performance_metrics()
-        if metrics:
-            report.append("PERFORMANCE METRICS:")
-            report.append("-" * 20)
-            report.append(f"CPU Usage: {metrics.cpu_percent:.1f}%")
-            report.append(f"Memory Usage: {metrics.memory_percent:.1f}%")
-            report.append(f"Disk Usage: {metrics.disk_percent:.1f}%")
-            if metrics.temperature:
-                report.append(f"CPU Temperature: {metrics.temperature:.1f}°C")
-            if metrics.fan_speed:
-                report.append(f"Fan Speed: {metrics.fan_speed} RPM")
-            report.append("")
-        
-        # Memory Information
-        memory_info = self.get_memory_info()
-        report.append("MEMORY INFORMATION:")
+        report.append("CURRENT CONDITIONS:")
         report.append("-" * 20)
-        report.append(f"Total Memory: {self.format_bytes(memory_info['total'])}")
-        report.append(f"Used Memory: {self.format_bytes(memory_info['used'])}")
-        report.append(f"Available Memory: {self.format_bytes(memory_info['available'])}")
-        report.append(f"Memory Usage: {memory_info['percent']:.1f}%")
-        report.append(f"Swap Usage: {memory_info['swap_percent']:.1f}%")
+        report.append(f"Temperature: {weather_data.temperature}°C")
+        report.append(f"Feels Like: {weather_data.feels_like}°C")
+        report.append(f"Condition: {weather_data.condition}")
+        report.append(f"Description: {weather_data.description}")
         report.append("")
         
-        # Disk Information
-        disks = self.get_disk_info()
-        report.append("DISK INFORMATION:")
+        report.append("DETAILED METRICS:")
         report.append("-" * 20)
-        for disk in disks:
-            report.append(f"Device: {disk['device']}")
-            report.append(f"Mountpoint: {disk['mountpoint']}")
-            report.append(f"Filesystem: {disk['fstype']}")
-            report.append(f"Total: {self.format_bytes(disk['total'])}")
-            report.append(f"Used: {self.format_bytes(disk['used'])} ({disk['percent']:.1f}%)")
-            report.append(f"Free: {self.format_bytes(disk['free'])}")
-            report.append("")
-        
-        # Top Processes
-        processes = self.get_process_info(5)
-        report.append("TOP PROCESSES (by CPU usage):")
-        report.append("-" * 30)
-        for proc in processes:
-            report.append(f"{proc['name']:<20} PID: {proc['pid']:<8} CPU: {proc.get('cpu_percent', 0):.1f}%")
+        report.append(f"Humidity: {weather_data.humidity}%")
+        report.append(f"Pressure: {weather_data.pressure} hPa")
+        report.append(f"Wind: {weather_data.wind_speed} km/h {weather_data.wind_direction}")
+        report.append(f"Visibility: {weather_data.visibility} km")
+        report.append(f"UV Index: {weather_data.uv_index}")
         report.append("")
         
-        # Battery Information
-        battery = self.get_battery_info()
-        if battery:
-            report.append("BATTERY INFORMATION:")
-            report.append("-" * 20)
-            report.append(f"Charge: {battery['percent']:.1f}%")
-            report.append(f"Plugged: {'Yes' if battery['power_plugged'] else 'No'}")
-            if battery['secsleft'] != psutil.POWER_TIME_UNLIMITED:
-                report.append(f"Time Left: {battery['secsleft'] // 3600}h {(battery['secsleft'] % 3600) // 60}m")
+        # Add recommendations
+        recommendations = self.get_weather_recommendations(weather_data)
+        if recommendations:
+            report.append("RECOMMENDATIONS:")
+            report.append("-" * 15)
+            for rec in recommendations:
+                report.append(f"• {rec}")
             report.append("")
         
         return "\n".join(report)
     
-    def format_bytes(self, bytes_value: int) -> str:
-        """Format bytes into human readable format"""
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if bytes_value < 1024.0:
-                return f"{bytes_value:.1f} {unit}"
-            bytes_value /= 1024.0
-        return f"{bytes_value:.1f} PB"
-    
-    def save_report(self, filename: str = None) -> str:
-        """Save system report to file"""
+    def save_weather_data(self, weather_data: WeatherData, filename: str = None) -> str:
+        """Save weather data to JSON file"""
         if filename is None:
-            filename = f"system_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"weather_data_{weather_data.location}_{timestamp}.json"
         
-        report = self.generate_system_report()
+        data = asdict(weather_data)
         with open(filename, 'w') as f:
-            f.write(report)
+            json.dump(data, f, indent=2)
         
         return filename
     
-    def export_json(self, filename: str = None) -> str:
-        """Export system data as JSON"""
+    def export_forecast_csv(self, forecast: List[ForecastData], filename: str = None) -> str:
+        """Export forecast data to CSV format"""
         if filename is None:
-            filename = f"system_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        data = {
-            'timestamp': datetime.now().isoformat(),
-            'system_info': asdict(self.get_system_info()) if self.get_system_info() else None,
-            'performance_metrics': asdict(self.get_performance_metrics()) if self.get_performance_metrics() else None,
-            'memory_info': self.get_memory_info(),
-            'disk_info': self.get_disk_info(),
-            'process_info': self.get_process_info(20),
-            'network_info': self.get_network_info(),
-            'battery_info': self.get_battery_info()
-        }
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"weather_forecast_{timestamp}.csv"
         
         with open(filename, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
+            f.write("Date,High Temp,Low Temp,Condition,Precipitation Chance,Humidity,Wind Speed\n")
+            for day in forecast:
+                f.write(f"{day.date},{day.high_temp},{day.low_temp},{day.condition},{day.precipitation_chance},{day.humidity},{day.wind_speed}\n")
         
         return filename
     
-    def cleanup_temp_files(self, older_than_days: int = 7) -> int:
-        """Clean up temporary files older than specified days"""
-        temp_dirs = ['/tmp', '/var/tmp', os.path.expanduser('~/tmp')]
-        cleaned_count = 0
+    def get_weather_statistics(self, location: str, days: int = 30) -> Dict[str, float]:
+        """Get weather statistics for a location"""
+        history = self.get_weather_history(location, days)
         
-        for temp_dir in temp_dirs:
-            if os.path.exists(temp_dir):
-                try:
-                    for root, dirs, files in os.walk(temp_dir):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            try:
-                                if os.path.getmtime(file_path) < time.time() - (older_than_days * 24 * 3600):
-                                    os.remove(file_path)
-                                    cleaned_count += 1
-                            except (OSError, PermissionError):
-                                continue
-                except PermissionError:
-                    continue
-        
-        return cleaned_count
-    
-    def check_disk_space(self, threshold: float = 90.0) -> List[Dict]:
-        """Check disk space and return partitions above threshold"""
-        warnings = []
-        disks = self.get_disk_info()
-        
-        for disk in disks:
-            if disk['percent'] > threshold:
-                warnings.append({
-                    'device': disk['device'],
-                    'mountpoint': disk['mountpoint'],
-                    'usage_percent': disk['percent'],
-                    'free_space': self.format_bytes(disk['free'])
-                })
-        
-        return warnings
-    
-    def get_system_health_score(self) -> Dict[str, Any]:
-        """Calculate overall system health score"""
-        metrics = self.get_performance_metrics()
-        if not metrics:
-            return {'score': 0, 'status': 'Unknown', 'issues': ['Unable to get metrics']}
-        
-        issues = []
-        score = 100
-        
-        # CPU usage penalty
-        if metrics.cpu_percent > 80:
-            score -= 20
-            issues.append("High CPU usage")
-        elif metrics.cpu_percent > 60:
-            score -= 10
-            issues.append("Moderate CPU usage")
-        
-        # Memory usage penalty
-        if metrics.memory_percent > 90:
-            score -= 25
-            issues.append("Critical memory usage")
-        elif metrics.memory_percent > 80:
-            score -= 15
-            issues.append("High memory usage")
-        
-        # Disk usage penalty
-        if metrics.disk_percent > 95:
-            score -= 30
-            issues.append("Critical disk usage")
-        elif metrics.disk_percent > 85:
-            score -= 15
-            issues.append("High disk usage")
-        
-        # Temperature penalty
-        if metrics.temperature and metrics.temperature > 80:
-            score -= 20
-            issues.append("High CPU temperature")
-        
-        # Determine status
-        if score >= 80:
-            status = "Excellent"
-        elif score >= 60:
-            status = "Good"
-        elif score >= 40:
-            status = "Fair"
-        elif score >= 20:
-            status = "Poor"
-        else:
-            status = "Critical"
+        temperatures = [day.temperature for day in history]
+        humidities = [day.humidity for day in history]
+        pressures = [day.pressure for day in history]
         
         return {
-            'score': max(0, score),
-            'status': status,
-            'issues': issues,
-            'recommendations': self.get_recommendations(issues)
+            'avg_temperature': round(sum(temperatures) / len(temperatures), 1),
+            'max_temperature': round(max(temperatures), 1),
+            'min_temperature': round(min(temperatures), 1),
+            'avg_humidity': round(sum(humidities) / len(humidities), 1),
+            'avg_pressure': round(sum(pressures) / len(pressures), 1),
+            'rainy_days': len([day for day in history if 'rain' in day.condition.lower()]),
+            'sunny_days': len([day for day in history if day.condition.lower() == 'clear'])
         }
-    
-    def get_recommendations(self, issues: List[str]) -> List[str]:
-        """Get recommendations based on system issues"""
-        recommendations = []
-        
-        for issue in issues:
-            if "CPU" in issue:
-                recommendations.append("Consider closing unnecessary applications or upgrading CPU")
-            if "memory" in issue:
-                recommendations.append("Close unused applications or consider adding more RAM")
-            if "disk" in issue:
-                recommendations.append("Free up disk space by deleting unnecessary files")
-            if "temperature" in issue:
-                recommendations.append("Check cooling system and clean dust from fans")
-        
-        return recommendations
 
 def demo():
-    """Demonstrate the System Monitor capabilities"""
-    monitor = SystemMonitor()
+    """Demonstrate the Weather Utility capabilities"""
+    weather = WeatherUtility()
     
-    print("🖥️  SYSTEM MONITOR DEMO 🖥️")
+    print("🌤️  WEATHER UTILITY DEMO 🌤️")
     print("=" * 50)
     
-    # System Information
-    print("\n📋 SYSTEM INFORMATION:")
-    sys_info = monitor.get_system_info()
-    if sys_info:
-        print(f"Hostname: {sys_info.hostname}")
-        print(f"OS: {sys_info.os_name} {sys_info.os_version}")
-        print(f"Architecture: {sys_info.architecture}")
-        print(f"Processor: {sys_info.processor}")
-        print(f"Uptime: {sys_info.uptime}")
+    # Current weather
+    location = "New York"
+    current_weather = weather.get_current_weather(location)
+    print(f"\n🌡️  CURRENT WEATHER - {location}:")
+    print(f"Temperature: {current_weather.temperature}°C")
+    print(f"Condition: {current_weather.condition}")
+    print(f"Humidity: {current_weather.humidity}%")
+    print(f"Wind: {current_weather.wind_speed} km/h {current_weather.wind_direction}")
     
-    # Performance Metrics
-    print("\n⚡ PERFORMANCE METRICS:")
-    metrics = monitor.get_performance_metrics()
-    if metrics:
-        print(f"CPU Usage: {metrics.cpu_percent:.1f}%")
-        print(f"Memory Usage: {metrics.memory_percent:.1f}%")
-        print(f"Disk Usage: {metrics.disk_percent:.1f}%")
-        if metrics.temperature:
-            print(f"CPU Temperature: {metrics.temperature:.1f}°C")
+    # Forecast
+    print(f"\n📅 5-DAY FORECAST - {location}:")
+    forecast = weather.get_forecast(location, 5)
+    for day in forecast:
+        print(f"{day.date}: {day.high_temp}°C/{day.low_temp}°C - {day.condition}")
     
-    # Memory Information
-    print("\n💾 MEMORY INFORMATION:")
-    memory = monitor.get_memory_info()
-    print(f"Total: {monitor.format_bytes(memory['total'])}")
-    print(f"Used: {monitor.format_bytes(memory['used'])} ({memory['percent']:.1f}%)")
-    print(f"Available: {monitor.format_bytes(memory['available'])}")
-    
-    # Top Processes
-    print("\n🔄 TOP PROCESSES:")
-    processes = monitor.get_process_info(5)
-    for proc in processes:
-        print(f"{proc['name']:<20} CPU: {proc.get('cpu_percent', 0):.1f}%")
-    
-    # System Health
-    print("\n🏥 SYSTEM HEALTH:")
-    health = monitor.get_system_health_score()
-    print(f"Health Score: {health['score']}/100 ({health['status']})")
-    if health['issues']:
-        print("Issues:")
-        for issue in health['issues']:
-            print(f"  • {issue}")
-    
-    # Disk Warnings
-    print("\n💿 DISK SPACE CHECK:")
-    warnings = monitor.check_disk_space(80)
-    if warnings:
-        for warning in warnings:
-            print(f"⚠️  {warning['device']}: {warning['usage_percent']:.1f}% used")
+    # Weather alerts
+    print(f"\n⚠️  WEATHER ALERTS - {location}:")
+    alerts = weather.get_weather_alerts(location)
+    if alerts:
+        for alert in alerts:
+            print(f"• {alert['type']}: {alert['message']}")
     else:
-        print("✅ All disks have adequate free space")
+        print("No active weather alerts")
+    
+    # Recommendations
+    print(f"\n💡 RECOMMENDATIONS:")
+    recommendations = weather.get_weather_recommendations(current_weather)
+    for rec in recommendations:
+        print(f"• {rec}")
+    
+    # Location comparison
+    print(f"\n🌍 LOCATION COMPARISON:")
+    locations = ["New York", "London", "Tokyo"]
+    comparison = weather.compare_locations(locations)
+    for loc, data in comparison.items():
+        print(f"{loc}: {data.temperature}°C - {data.condition}")
+    
+    # Statistics
+    print(f"\n📊 WEATHER STATISTICS (30 days) - {location}:")
+    stats = weather.get_weather_statistics(location, 30)
+    print(f"Average Temperature: {stats['avg_temperature']}°C")
+    print(f"Temperature Range: {stats['min_temperature']}°C to {stats['max_temperature']}°C")
+    print(f"Rainy Days: {stats['rainy_days']}")
+    print(f"Sunny Days: {stats['sunny_days']}")
 
 def interactive_mode():
-    """Interactive mode for system monitoring"""
-    monitor = SystemMonitor()
+    """Interactive mode for weather utility"""
+    weather = WeatherUtility()
     
-    print("\n🖥️  INTERACTIVE SYSTEM MONITOR 🖥️")
+    print("\n🌤️  INTERACTIVE WEATHER UTILITY 🌤️")
     print("=" * 40)
     
     while True:
         print("\nChoose an option:")
-        print("1. Show System Information")
-        print("2. Show Performance Metrics")
-        print("3. Show Memory Information")
-        print("4. Show Disk Information")
-        print("5. Show Top Processes")
-        print("6. Monitor System (Real-time)")
-        print("7. Generate System Report")
-        print("8. Export Data (JSON)")
-        print("9. Check System Health")
-        print("10. Cleanup Temp Files")
-        print("11. Check Disk Space")
+        print("1. Get Current Weather")
+        print("2. Get Weather Forecast")
+        print("3. Get Weather Alerts")
+        print("4. Compare Locations")
+        print("5. Get Weather History")
+        print("6. Get Weather Statistics")
+        print("7. Generate Weather Report")
+        print("8. Save Weather Data")
+        print("9. Export Forecast (CSV)")
+        print("10. Set API Key (for real data)")
         print("0. Exit")
         
-        choice = input("\nEnter your choice (0-11): ").strip()
+        choice = input("\nEnter your choice (0-10): ").strip()
         
         if choice == "0":
-            print("Thanks for using System Monitor! 🖥️")
+            print("Thanks for using Weather Utility! 🌤️")
             break
         elif choice == "1":
-            sys_info = monitor.get_system_info()
-            if sys_info:
-                print(f"\n📋 SYSTEM INFORMATION:")
-                print(f"Hostname: {sys_info.hostname}")
-                print(f"OS: {sys_info.os_name} {sys_info.os_version}")
-                print(f"Architecture: {sys_info.architecture}")
-                print(f"Processor: {sys_info.processor}")
-                print(f"Python Version: {sys_info.python_version}")
-                print(f"Uptime: {sys_info.uptime}")
-                print(f"Boot Time: {sys_info.boot_time}")
+            location = input("Enter location: ") or "New York"
+            current_weather = weather.get_current_weather(location)
+            print(f"\n🌡️  CURRENT WEATHER - {location}:")
+            print(f"Temperature: {current_weather.temperature}°C")
+            print(f"Feels Like: {current_weather.feels_like}°C")
+            print(f"Condition: {current_weather.condition}")
+            print(f"Description: {current_weather.description}")
+            print(f"Humidity: {current_weather.humidity}%")
+            print(f"Pressure: {current_weather.pressure} hPa")
+            print(f"Wind: {current_weather.wind_speed} km/h {current_weather.wind_direction}")
+            print(f"Visibility: {current_weather.visibility} km")
+            print(f"UV Index: {current_weather.uv_index}")
         elif choice == "2":
-            metrics = monitor.get_performance_metrics()
-            if metrics:
-                print(f"\n⚡ PERFORMANCE METRICS:")
-                print(f"CPU Usage: {metrics.cpu_percent:.1f}%")
-                print(f"Memory Usage: {metrics.memory_percent:.1f}%")
-                print(f"Disk Usage: {metrics.disk_percent:.1f}%")
-                if metrics.temperature:
-                    print(f"CPU Temperature: {metrics.temperature:.1f}°C")
-                if metrics.fan_speed:
-                    print(f"Fan Speed: {metrics.fan_speed} RPM")
+            location = input("Enter location: ") or "New York"
+            days = int(input("Number of days (default 5): ") or "5")
+            forecast = weather.get_forecast(location, days)
+            print(f"\n📅 {days}-DAY FORECAST - {location}:")
+            for day in forecast:
+                print(f"{day.date}: {day.high_temp}°C/{day.low_temp}°C - {day.condition} ({day.precipitation_chance}% rain)")
         elif choice == "3":
-            memory = monitor.get_memory_info()
-            print(f"\n💾 MEMORY INFORMATION:")
-            print(f"Total: {monitor.format_bytes(memory['total'])}")
-            print(f"Used: {monitor.format_bytes(memory['used'])} ({memory['percent']:.1f}%)")
-            print(f"Available: {monitor.format_bytes(memory['available'])}")
-            print(f"Free: {monitor.format_bytes(memory['free'])}")
-            print(f"Swap Total: {monitor.format_bytes(memory['swap_total'])}")
-            print(f"Swap Used: {monitor.format_bytes(memory['swap_used'])} ({memory['swap_percent']:.1f}%)")
-        elif choice == "4":
-            disks = monitor.get_disk_info()
-            print(f"\n💿 DISK INFORMATION:")
-            for disk in disks:
-                print(f"Device: {disk['device']}")
-                print(f"Mountpoint: {disk['mountpoint']}")
-                print(f"Filesystem: {disk['fstype']}")
-                print(f"Total: {monitor.format_bytes(disk['total'])}")
-                print(f"Used: {monitor.format_bytes(disk['used'])} ({disk['percent']:.1f}%)")
-                print(f"Free: {monitor.format_bytes(disk['free'])}")
-                print("-" * 30)
-        elif choice == "5":
-            limit = int(input("Number of processes to show (default 10): ") or "10")
-            processes = monitor.get_process_info(limit)
-            print(f"\n🔄 TOP {limit} PROCESSES:")
-            for proc in processes:
-                print(f"{proc['name']:<25} PID: {proc['pid']:<8} CPU: {proc.get('cpu_percent', 0):.1f}% Memory: {proc.get('memory_percent', 0):.1f}%")
-        elif choice == "6":
-            duration = int(input("Monitoring duration in seconds (default 60): ") or "60")
-            interval = int(input("Update interval in seconds (default 5): ") or "5")
-            data = monitor.monitor_system(duration, interval)
-            print(f"\n📊 MONITORING COMPLETE - Collected {len(data)} data points")
-        elif choice == "7":
-            filename = monitor.save_report()
-            print(f"\n📄 System report saved to: {filename}")
-        elif choice == "8":
-            filename = monitor.export_json()
-            print(f"\n📊 System data exported to: {filename}")
-        elif choice == "9":
-            health = monitor.get_system_health_score()
-            print(f"\n🏥 SYSTEM HEALTH:")
-            print(f"Health Score: {health['score']}/100 ({health['status']})")
-            if health['issues']:
-                print("\nIssues:")
-                for issue in health['issues']:
-                    print(f"  • {issue}")
-            if health['recommendations']:
-                print("\nRecommendations:")
-                for rec in health['recommendations']:
-                    print(f"  • {rec}")
-        elif choice == "10":
-            days = int(input("Delete temp files older than (days, default 7): ") or "7")
-            cleaned = monitor.cleanup_temp_files(days)
-            print(f"\n🧹 Cleaned up {cleaned} temporary files")
-        elif choice == "11":
-            threshold = float(input("Disk usage threshold % (default 90): ") or "90")
-            warnings = monitor.check_disk_space(threshold)
-            if warnings:
-                print(f"\n⚠️  DISK SPACE WARNINGS (>{threshold}% used):")
-                for warning in warnings:
-                    print(f"Device: {warning['device']}")
-                    print(f"Mountpoint: {warning['mountpoint']}")
-                    print(f"Usage: {warning['usage_percent']:.1f}%")
-                    print(f"Free Space: {warning['free_space']}")
-                    print("-" * 30)
+            location = input("Enter location: ") or "New York"
+            alerts = weather.get_weather_alerts(location)
+            print(f"\n⚠️  WEATHER ALERTS - {location}:")
+            if alerts:
+                for alert in alerts:
+                    print(f"• {alert['type']}")
+                    print(f"  {alert['message']}")
+                    print(f"  Issued: {alert['issued']}")
+                    print(f"  Expires: {alert['expires']}")
+                    print()
             else:
-                print(f"\n✅ All disks are below {threshold}% usage")
+                print("No active weather alerts")
+        elif choice == "4":
+            locations_input = input("Enter locations (comma-separated): ") or "New York, London, Tokyo"
+            locations = [loc.strip() for loc in locations_input.split(',')]
+            comparison = weather.compare_locations(locations)
+            print(f"\n🌍 LOCATION COMPARISON:")
+            for loc, data in comparison.items():
+                print(f"{loc}: {data.temperature}°C - {data.condition} - {data.humidity}% humidity")
+        elif choice == "5":
+            location = input("Enter location: ") or "New York"
+            days = int(input("Number of days (default 7): ") or "7")
+            history = weather.get_weather_history(location, days)
+            print(f"\n📈 WEATHER HISTORY - {location} (Last {days} days):")
+            for day in history:
+                date = datetime.fromisoformat(day.timestamp).strftime('%Y-%m-%d')
+                print(f"{date}: {day.temperature}°C - {day.condition}")
+        elif choice == "6":
+            location = input("Enter location: ") or "New York"
+            days = int(input("Number of days (default 30): ") or "30")
+            stats = weather.get_weather_statistics(location, days)
+            print(f"\n📊 WEATHER STATISTICS - {location} (Last {days} days):")
+            print(f"Average Temperature: {stats['avg_temperature']}°C")
+            print(f"Max Temperature: {stats['max_temperature']}°C")
+            print(f"Min Temperature: {stats['min_temperature']}°C")
+            print(f"Average Humidity: {stats['avg_humidity']}%")
+            print(f"Average Pressure: {stats['avg_pressure']} hPa")
+            print(f"Rainy Days: {stats['rainy_days']}")
+            print(f"Sunny Days: {stats['sunny_days']}")
+        elif choice == "7":
+            location = input("Enter location: ") or "New York"
+            current_weather = weather.get_current_weather(location)
+            report = weather.format_weather_report(current_weather)
+            print(f"\n{report}")
+        elif choice == "8":
+            location = input("Enter location: ") or "New York"
+            current_weather = weather.get_current_weather(location)
+            filename = weather.save_weather_data(current_weather)
+            print(f"\n💾 Weather data saved to: {filename}")
+        elif choice == "9":
+            location = input("Enter location: ") or "New York"
+            days = int(input("Number of days (default 7): ") or "7")
+            forecast = weather.get_forecast(location, days)
+            filename = weather.export_forecast_csv(forecast)
+            print(f"\n📊 Forecast exported to: {filename}")
+        elif choice == "10":
+            api_key = input("Enter API key: ")
+            provider = input("Enter provider (openweathermap/weatherapi, default: openweathermap): ") or "openweathermap"
+            weather.set_api_key(api_key, provider)
         else:
             print("Invalid choice! Please try again.")
 
